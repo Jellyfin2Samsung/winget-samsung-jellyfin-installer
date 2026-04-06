@@ -1,0 +1,90 @@
+name: bump-winget-samsung-jellyfin-installer
+
+on:
+  schedule:
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+
+jobs:
+  bump-winget:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check versions
+        id: versions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $latest = gh release view --repo Jellyfin2Samsung/samsung-jellyfin-installer --json tagName -q ".tagName"
+          $latest = $latest.TrimStart('v')
+
+          $current = Get-Content manifests/j/Jellyfin2Samsung/Jellyfin2Samsung/installer.yaml |
+            Select-String 'PackageVersion:' |
+            ForEach-Object { ($_ -replace 'PackageVersion:\s*', '').Trim() } |
+            Select-Object -First 1
+
+          echo "Latest: $latest"
+          echo "Current: $current"
+
+          echo "latest=$latest" >> $env:GITHUB_OUTPUT
+          echo "current=$current" >> $env:GITHUB_OUTPUT
+
+      - name: Skip if up to date
+        if: steps.versions.outputs.latest == steps.versions.outputs.current
+        shell: pwsh
+        run: |
+          echo "No new version. Skipping."
+          exit 0
+
+      - name: Download Windows zip from release
+        if: steps.versions.outputs.latest != steps.versions.outputs.current
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION_TAG: v${{ steps.versions.outputs.latest }}
+        shell: pwsh
+        run: |
+          gh release download $env:VERSION_TAG `
+            --repo Jellyfin2Samsung/samsung-jellyfin-installer `
+            --pattern "*-win-x64.zip" `
+            --output win.zip
+
+          Expand-Archive win.zip -DestinationPath publish
+
+      - name: Install WiX
+        if: steps.versions.outputs.latest != steps.versions.outputs.current
+        run: dotnet tool install --global wix
+
+      - name: Build MSI
+        if: steps.versions.outputs.latest != steps.versions.outputs.current
+        env:
+          VERSION: ${{ steps.versions.outputs.latest }}
+        shell: pwsh
+        run: |
+          wix build installer/Product.wxs -o "Jellyfin2Samsung-v$env:VERSION-win-x64.msi"
+
+      - name: Upload MSI to release
+        if: steps.versions.outputs.latest != steps.versions.outputs.current
+        env:
+          GH_TOKEN: ${{ secrets.MAIN_REPO_TOKEN }}
+          VERSION_TAG: v${{ steps.versions.outputs.latest }}
+          VERSION: ${{ steps.versions.outputs.latest }}
+        shell: pwsh
+        run: |
+          gh release upload $env:VERSION_TAG `
+            "Jellyfin2Samsung-v$env:VERSION-win-x64.msi" `
+            --repo Jellyfin2Samsung/samsung-jellyfin-installer `
+            --clobber
+
+      - name: Submit to WinGet
+        if: steps.versions.outputs.latest != steps.versions.outputs.current
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: Jellyfin2Samsung.Jellyfin2Samsung
+          version: ${{ steps.versions.outputs.latest }}
+          release-tag: v${{ steps.versions.outputs.latest }}
+          installers-regex: '\.msi$'
+          fork-user: Jellyfin2Samsung
+          token: ${{ secrets.WINGET_TOKEN }}
