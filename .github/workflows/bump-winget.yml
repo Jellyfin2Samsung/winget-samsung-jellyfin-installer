@@ -21,7 +21,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          latest=$(gh release view --repo Jellyfin2Samsung/samsung-jellyfin-installer --json tagName -q ".tagName" | sed 's/^v//')
+          latest=$(gh release view --repo Jellyfin2Samsung/Samsung-Jellyfin-Installer --json tagName -q ".tagName" | sed 's/^v//')
 
           manifest="manifests/j/Jellyfin2Samsung/Jellyfin2Samsung/installer.yaml"
           if [ -f "$manifest" ]; then
@@ -54,14 +54,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION_TAG: v${{ needs.check.outputs.latest }}
+        shell: pwsh
         run: |
           gh release download "$env:VERSION_TAG" `
-            --repo Jellyfin2Samsung/samsung-jellyfin-installer `
+            --repo Jellyfin2Samsung/Samsung-Jellyfin-Installer `
             --pattern "*-win-x64.zip" `
             --output win.zip
 
           Expand-Archive win.zip -DestinationPath publish
-        shell: pwsh
 
       - name: Install WiX
         run: dotnet tool install --global wix
@@ -69,20 +69,20 @@ jobs:
       - name: Build MSI
         env:
           VERSION: ${{ needs.check.outputs.latest }}
-        run: wix build installer/Product.wxs -o "Jellyfin2Samsung-v$env:VERSION-win-x64.msi"
         shell: pwsh
+        run: wix build installer/Product.wxs -o "Jellyfin2Samsung-v$env:VERSION-win-x64.msi"
 
       - name: Upload MSI to release
         env:
           GH_TOKEN: ${{ secrets.MAIN_REPO_TOKEN }}
           VERSION_TAG: v${{ needs.check.outputs.latest }}
           VERSION: ${{ needs.check.outputs.latest }}
+        shell: pwsh
         run: |
           gh release upload "$env:VERSION_TAG" `
             "Jellyfin2Samsung-v$env:VERSION-win-x64.msi" `
             --repo Jellyfin2Samsung/Samsung-Jellyfin-Installer `
             --clobber
-        shell: pwsh
 
       - name: Submit to WinGet
         uses: vedantmgoyal9/winget-releaser@v2
@@ -93,3 +93,23 @@ jobs:
           installers-regex: '\.msi$'
           fork-user: Jellyfin2Samsung
           token: ${{ secrets.WINGET_TOKEN }}
+
+      - name: Update local manifest version
+        env:
+          VERSION: ${{ needs.check.outputs.latest }}
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Path "manifests/j/Jellyfin2Samsung/Jellyfin2Samsung" -Filter "*.yaml" -Recurse
+          foreach ($file in $files) {
+            (Get-Content $file) -replace 'PackageVersion:.*', "PackageVersion: $env:VERSION" |
+              Set-Content $file
+          }
+
+      - name: Commit updated manifests
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add manifests/
+          git commit -m "chore: bump manifest to v${{ needs.check.outputs.latest }}"
+          git push
