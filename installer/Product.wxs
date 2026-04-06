@@ -16,17 +16,15 @@
   </Package>
 
   <Fragment>
-    <Directory Id="TARGETDIR" Name="SourceDir">
-      <Directory Id="ProgramFilesFolder">
-        <Directory Id="INSTALLFOLDER" Name="Jellyfin2Samsung" />
-      </Directory>
-    </Directory>
+    <StandardDirectory Id="ProgramFilesFolder">
+      <Directory Id="INSTALLFOLDER" Name="Jellyfin2Samsung" />
+    </StandardDirectory>
   </Fragment>
 
   <Fragment>
     <ComponentGroup Id="MainComponents" Directory="INSTALLFOLDER">
       <Component Id="MainExecutable">
-        <File Source="publish\Jellyfin2Samsung.exe" KeyPath="yes" />
+        <File Source="publish/Jellyfin2Samsung.exe" KeyPath="yes" />
       </Component>
     </ComponentGroup>
   </Fragment>
