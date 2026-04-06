@@ -23,9 +23,7 @@
 
   <Fragment>
     <ComponentGroup Id="MainComponents" Directory="INSTALLFOLDER">
-      <Component Id="MainExecutable">
-        <File Source="publish/Jellyfin2Samsung.exe" KeyPath="yes" />
-      </Component>
+      <Files Include="publish\**\*.*" />
     </ComponentGroup>
   </Fragment>
 </Wix>
