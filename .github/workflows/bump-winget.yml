@@ -7,7 +7,7 @@ on:
 
 jobs:
   bump-winget:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -16,25 +16,24 @@ jobs:
         id: versions
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: pwsh
         run: |
-          $latest = gh release view --repo Jellyfin2Samsung/samsung-jellyfin-installer --json tagName -q ".tagName"
-          $latest = $latest.TrimStart('v')
+          latest=$(gh release view --repo Jellyfin2Samsung/samsung-jellyfin-installer --json tagName -q ".tagName" | sed 's/^v//')
 
-          $current = Get-Content manifests/j/Jellyfin2Samsung/Jellyfin2Samsung/installer.yaml |
-            Select-String 'PackageVersion:' |
-            ForEach-Object { ($_ -replace 'PackageVersion:\s*', '').Trim() } |
-            Select-Object -First 1
+          manifest="manifests/j/Jellyfin2Samsung/Jellyfin2Samsung/installer.yaml"
+          if [ -f "$manifest" ]; then
+            current=$(grep 'PackageVersion:' "$manifest" | head -1 | sed 's/PackageVersion:\s*//' | xargs)
+          else
+            current=""
+          fi
 
           echo "Latest: $latest"
           echo "Current: $current"
 
-          echo "latest=$latest" >> $env:GITHUB_OUTPUT
-          echo "current=$current" >> $env:GITHUB_OUTPUT
+          echo "latest=$latest" >> $GITHUB_OUTPUT
+          echo "current=$current" >> $GITHUB_OUTPUT
 
       - name: Skip if up to date
         if: steps.versions.outputs.latest == steps.versions.outputs.current
-        shell: pwsh
         run: |
           echo "No new version. Skipping."
           exit 0
@@ -44,14 +43,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION_TAG: v${{ steps.versions.outputs.latest }}
-        shell: pwsh
         run: |
-          gh release download $env:VERSION_TAG `
-            --repo Jellyfin2Samsung/samsung-jellyfin-installer `
-            --pattern "*-win-x64.zip" `
+          gh release download "$VERSION_TAG" \
+            --repo Jellyfin2Samsung/samsung-jellyfin-installer \
+            --pattern "*-win-x64.zip" \
             --output win.zip
 
-          Expand-Archive win.zip -DestinationPath publish
+          unzip win.zip -d publish
 
       - name: Install WiX
         if: steps.versions.outputs.latest != steps.versions.outputs.current
@@ -61,9 +59,8 @@ jobs:
         if: steps.versions.outputs.latest != steps.versions.outputs.current
         env:
           VERSION: ${{ steps.versions.outputs.latest }}
-        shell: pwsh
         run: |
-          wix build installer/Product.wxs -o "Jellyfin2Samsung-v$env:VERSION-win-x64.msi"
+          wix build installer/Product.wxs -o "Jellyfin2Samsung-v${VERSION}-win-x64.msi"
 
       - name: Upload MSI to release
         if: steps.versions.outputs.latest != steps.versions.outputs.current
@@ -71,11 +68,10 @@ jobs:
           GH_TOKEN: ${{ secrets.MAIN_REPO_TOKEN }}
           VERSION_TAG: v${{ steps.versions.outputs.latest }}
           VERSION: ${{ steps.versions.outputs.latest }}
-        shell: pwsh
         run: |
-          gh release upload $env:VERSION_TAG `
-            "Jellyfin2Samsung-v$env:VERSION-win-x64.msi" `
-            --repo Jellyfin2Samsung/samsung-jellyfin-installer `
+          gh release upload "$VERSION_TAG" \
+            "Jellyfin2Samsung-v${VERSION}-win-x64.msi" \
+            --repo Jellyfin2Samsung/samsung-jellyfin-installer \
             --clobber
 
       - name: Submit to WinGet
