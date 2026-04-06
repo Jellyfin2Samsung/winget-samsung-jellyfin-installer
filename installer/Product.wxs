@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
   <Package
     Name="Jellyfin2Samsung"
     Manufacturer="Jellyfin2Samsung"
@@ -12,18 +13,57 @@
 
     <Feature Id="MainFeature" Level="1">
       <ComponentGroupRef Id="MainComponents" />
+      <ComponentGroupRef Id="Shortcuts" />
+      <ComponentGroupRef Id="InstallFolderPermissions" />
     </Feature>
   </Package>
 
   <Fragment>
-    <StandardDirectory Id="ProgramFilesFolder">
+    <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Jellyfin2Samsung" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppMenuFolder" Name="Jellyfin2Samsung" />
     </StandardDirectory>
   </Fragment>
 
   <Fragment>
     <ComponentGroup Id="MainComponents" Directory="INSTALLFOLDER">
-      <Files Include="publish\**\*.*" />
+      <Files Include="..\publish\**\*.*" />
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="InstallFolderPermissions" Directory="INSTALLFOLDER">
+      <Component Id="InstallFolderPermission">
+        <CreateFolder>
+          <util:PermissionEx User="Users" GenericWrite="yes" />
+        </CreateFolder>
+        <RegistryValue Root="HKLM"
+                       Key="Software\Jellyfin2Samsung"
+                       Name="permissions"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+  </Fragment>
+
+  <Fragment>
+    <ComponentGroup Id="Shortcuts" Directory="AppMenuFolder">
+      <Component Id="AppShortcut">
+        <Shortcut Id="StartMenuShortcut"
+                  Name="Jellyfin2Samsung"
+                  Target="[INSTALLFOLDER]Jellyfin2Samsung.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RemoveFolder Id="RemoveAppMenuFolder" Directory="AppMenuFolder" On="uninstall" />
+        <RegistryValue Root="HKLM"
+                       Key="Software\Jellyfin2Samsung"
+                       Name="installed"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
     </ComponentGroup>
   </Fragment>
 </Wix>

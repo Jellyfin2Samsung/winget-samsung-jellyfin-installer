@@ -64,13 +64,15 @@ jobs:
           Expand-Archive win.zip -DestinationPath publish
 
       - name: Install WiX
-        run: dotnet tool install --global wix
+        run: |
+          dotnet tool install --global wix
+          wix extension add "WixToolset.Util.wixext/$(wix --version)"
 
       - name: Build MSI
         env:
           VERSION: ${{ needs.check.outputs.latest }}
         shell: pwsh
-        run: wix build installer/Product.wxs -o "Jellyfin2Samsung-v$env:VERSION-win-x64.msi"
+        run: wix build installer/Product.wxs -arch x64 -ext WixToolset.Util.wixext -o "Jellyfin2Samsung-v$env:VERSION-win-x64.msi"
 
       - name: Upload MSI to release
         env:
