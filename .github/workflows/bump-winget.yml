@@ -80,7 +80,7 @@ jobs:
         run: |
           gh release upload "$env:VERSION_TAG" `
             "Jellyfin2Samsung-v$env:VERSION-win-x64.msi" `
-            --repo Jellyfin2Samsung/samsung-jellyfin-installer `
+            --repo Jellyfin2Samsung/Samsung-Jellyfin-Installer `
             --clobber
         shell: pwsh
 
