@@ -6,8 +6,12 @@ on:
   workflow_dispatch:
 
 jobs:
-  bump-winget:
+  check:
     runs-on: ubuntu-latest
+    outputs:
+      latest: ${{ steps.versions.outputs.latest }}
+      current: ${{ steps.versions.outputs.current }}
+      has_update: ${{ steps.versions.outputs.has_update }}
 
     steps:
       - uses: actions/checkout@v4
@@ -32,55 +36,60 @@ jobs:
           echo "latest=$latest" >> $GITHUB_OUTPUT
           echo "current=$current" >> $GITHUB_OUTPUT
 
-      - name: Skip if up to date
-        if: steps.versions.outputs.latest == steps.versions.outputs.current
-        run: |
-          echo "No new version. Skipping."
-          exit 0
+          if [ "$latest" != "$current" ]; then
+            echo "has_update=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_update=false" >> $GITHUB_OUTPUT
+          fi
+
+  build-and-submit:
+    runs-on: windows-latest
+    needs: check
+    if: needs.check.outputs.has_update == 'true'
+
+    steps:
+      - uses: actions/checkout@v4
 
       - name: Download Windows zip from release
-        if: steps.versions.outputs.latest != steps.versions.outputs.current
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION_TAG: v${{ steps.versions.outputs.latest }}
+          VERSION_TAG: v${{ needs.check.outputs.latest }}
         run: |
-          gh release download "$VERSION_TAG" \
-            --repo Jellyfin2Samsung/samsung-jellyfin-installer \
-            --pattern "*-win-x64.zip" \
+          gh release download "$env:VERSION_TAG" `
+            --repo Jellyfin2Samsung/samsung-jellyfin-installer `
+            --pattern "*-win-x64.zip" `
             --output win.zip
 
-          unzip win.zip -d publish
+          Expand-Archive win.zip -DestinationPath publish
+        shell: pwsh
 
       - name: Install WiX
-        if: steps.versions.outputs.latest != steps.versions.outputs.current
         run: dotnet tool install --global wix
 
       - name: Build MSI
-        if: steps.versions.outputs.latest != steps.versions.outputs.current
         env:
-          VERSION: ${{ steps.versions.outputs.latest }}
-        run: |
-          wix build installer/Product.wxs -o "Jellyfin2Samsung-v${VERSION}-win-x64.msi"
+          VERSION: ${{ needs.check.outputs.latest }}
+        run: wix build installer/Product.wxs -o "Jellyfin2Samsung-v$env:VERSION-win-x64.msi"
+        shell: pwsh
 
       - name: Upload MSI to release
-        if: steps.versions.outputs.latest != steps.versions.outputs.current
         env:
           GH_TOKEN: ${{ secrets.MAIN_REPO_TOKEN }}
-          VERSION_TAG: v${{ steps.versions.outputs.latest }}
-          VERSION: ${{ steps.versions.outputs.latest }}
+          VERSION_TAG: v${{ needs.check.outputs.latest }}
+          VERSION: ${{ needs.check.outputs.latest }}
         run: |
-          gh release upload "$VERSION_TAG" \
-            "Jellyfin2Samsung-v${VERSION}-win-x64.msi" \
-            --repo Jellyfin2Samsung/samsung-jellyfin-installer \
+          gh release upload "$env:VERSION_TAG" `
+            "Jellyfin2Samsung-v$env:VERSION-win-x64.msi" `
+            --repo Jellyfin2Samsung/samsung-jellyfin-installer `
             --clobber
+        shell: pwsh
 
       - name: Submit to WinGet
-        if: steps.versions.outputs.latest != steps.versions.outputs.current
         uses: vedantmgoyal9/winget-releaser@v2
         with:
           identifier: Jellyfin2Samsung.Jellyfin2Samsung
-          version: ${{ steps.versions.outputs.latest }}
-          release-tag: v${{ steps.versions.outputs.latest }}
+          version: ${{ needs.check.outputs.latest }}
+          release-tag: v${{ needs.check.outputs.latest }}
           installers-regex: '\.msi$'
           fork-user: Jellyfin2Samsung
           token: ${{ secrets.WINGET_TOKEN }}
