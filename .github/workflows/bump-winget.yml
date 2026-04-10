@@ -96,7 +96,7 @@ jobs:
           release-repository: Samsung-Jellyfin-Installer
           installers-regex: '\.msi$'
           fork-user: Jellyfin2Samsung
-          token: ${{ secrets.WINGET_TOKEN }}
+          token: ${{ secrets.MAIN_REPO_TOKEN }}
 
       - name: Update local manifest version
         env:
