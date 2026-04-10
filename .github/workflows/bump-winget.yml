@@ -97,24 +97,3 @@ jobs:
           installers-regex: '\.msi$'
           fork-user: Jellyfin2Samsung
           token: ${{ secrets.MAIN_REPO_TOKEN }}
-
-      - name: Update local manifest version
-        env:
-          VERSION: ${{ needs.check.outputs.latest }}
-        shell: pwsh
-        run: |
-          $files = Get-ChildItem -Path "manifests/j/Jellyfin2Samsung/Jellyfin2Samsung" -Filter "*.yaml" -Recurse
-          foreach ($file in $files) {
-            (Get-Content $file) -replace 'PackageVersion:.*', "PackageVersion: $env:VERSION" |
-              Set-Content $file
-          }
-
-      - name: Commit updated manifests
-        shell: pwsh
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add manifests/
-          git diff --cached --quiet && exit 0
-          git commit -m "chore: bump manifest to v${{ needs.check.outputs.latest }}"
-          git push
