@@ -66,6 +66,7 @@ jobs:
       - name: Install WiX
         run: |
           dotnet tool install --global wix
+          wix eula accept wix7
           wix extension add "WixToolset.Util.wixext/$(wix --version)"
 
       - name: Build MSI
