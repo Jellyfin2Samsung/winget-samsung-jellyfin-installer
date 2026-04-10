@@ -93,6 +93,7 @@ jobs:
           identifier: Jellyfin2Samsung.Jellyfin2Samsung
           version: ${{ needs.check.outputs.latest }}
           release-tag: v${{ needs.check.outputs.latest }}
+          release-repository: Samsung-Jellyfin-Installer
           installers-regex: '\.msi$'
           fork-user: Jellyfin2Samsung
           token: ${{ secrets.WINGET_TOKEN }}
@@ -114,5 +115,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add manifests/
+          git diff --cached --quiet && exit 0
           git commit -m "chore: bump manifest to v${{ needs.check.outputs.latest }}"
           git push
