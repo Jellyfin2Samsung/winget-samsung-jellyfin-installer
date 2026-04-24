@@ -4,13 +4,35 @@ on:
   schedule:
     - cron: '0 9 * * *'
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Force build/update/submit even when version already exists'
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: 'Run the full flow but skip MSI upload, manifest commit, and WinGet PR'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
 
+concurrency:
+  group: bump-winget-samsung-jellyfin-installer
+  cancel-in-progress: false
+
+env:
+  # Pin WiX so a scheduled run never breaks on a new major.
+  # Bump intentionally when you want newer WiX features / fixes.
+  WIX_VERSION: '5.0.2'
+  WIX_UTIL_EXT_VERSION: '5.0.2'
+
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
 
     outputs:
       latest: ${{ steps.versions.outputs.latest }}
@@ -20,6 +42,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Check versions
         id: versions
@@ -37,14 +61,17 @@ jobs:
             sed 's/^v//'
           )"
 
+          if [ -z "$latest" ]; then
+            echo "::error::Could not determine latest upstream version."
+            exit 1
+          fi
+
           manifest_root="manifests/j/Jellyfin2Samsung/Jellyfin2Samsung"
 
           if [ -d "$manifest_root" ]; then
             current="$(
-              find "$manifest_root" \
-                -name "Jellyfin2Samsung.Jellyfin2Samsung.installer.yaml" \
-                -exec grep -H "PackageVersion:" {} \; |
-              sed 's/.*PackageVersion:[[:space:]]*//' |
+              find "$manifest_root" -mindepth 1 -maxdepth 1 -type d \
+                -printf '%f\n' |
               sort -V |
               tail -1
             )"
@@ -52,14 +79,18 @@ jobs:
             current=""
           fi
 
-          echo "Latest: $latest"
-          echo "Current: $current"
+          echo "Latest:  $latest"
+          echo "Current: ${current:-<none>}"
 
-          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest"   >> "$GITHUB_OUTPUT"
           echo "current=$current" >> "$GITHUB_OUTPUT"
 
-          if [ "$latest" != "$current" ]; then
-            echo "has_update=true" >> "$GITHUB_OUTPUT"
+          # has_update iff latest != current AND latest sorts >= current.
+          # This prevents accidental downgrades if upstream retags or deletes.
+          highest="$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -1)"
+
+          if [ "$latest" != "$current" ] && [ "$highest" = "$latest" ]; then
+            echo "has_update=true"  >> "$GITHUB_OUTPUT"
           else
             echo "has_update=false" >> "$GITHUB_OUTPUT"
           fi
@@ -67,13 +98,17 @@ jobs:
   build-update-and-submit:
     runs-on: windows-latest
     needs: check
-    if: needs.check.outputs.has_update == 'true'
+    if: needs.check.outputs.has_update == 'true' || github.event.inputs.force == 'true'
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.MAIN_REPO_TOKEN }}
+          # WINGET_TOKEN is persisted here so the later `git push` to main uses it.
+          token: ${{ secrets.WINGET_TOKEN }}
+          ref: main
+          fetch-depth: 0
 
       - name: Download Windows zip from release
         env:
@@ -81,6 +116,8 @@ jobs:
           VERSION_TAG: v${{ needs.check.outputs.latest }}
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           gh release download "$env:VERSION_TAG" `
             --repo Jellyfin2Samsung/Samsung-Jellyfin-Installer `
             --pattern "*-win-x64.zip" `
@@ -88,18 +125,38 @@ jobs:
 
           Expand-Archive win.zip -DestinationPath publish -Force
 
+      - name: Cache WiX tool
+        id: wix-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.dotnet/tools
+          key: wix-${{ env.WIX_VERSION }}-${{ env.WIX_UTIL_EXT_VERSION }}
+
       - name: Install WiX
+        if: steps.wix-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          dotnet tool install --global wix
+          $ErrorActionPreference = "Stop"
+
+          dotnet tool install --global wix --version $env:WIX_VERSION
           wix eula accept wix7
-          wix extension add "WixToolset.Util.wixext/$(wix --version)"
+          wix extension add "WixToolset.Util.wixext/$env:WIX_UTIL_EXT_VERSION"
+
+      - name: Ensure WiX on PATH (cache hit)
+        if: steps.wix-cache.outputs.cache-hit == 'true'
+        shell: pwsh
+        run: |
+          # Cached tools still need PATH set and EULA accepted per-runner.
+          Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.dotnet\tools"
+          wix eula accept wix7
 
       - name: Build MSI
         env:
           VERSION: ${{ needs.check.outputs.latest }}
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           wix build installer/Product.wxs `
             -arch x64 `
             -ext WixToolset.Util.wixext `
@@ -111,6 +168,8 @@ jobs:
           VERSION: ${{ needs.check.outputs.latest }}
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           $msi = "Jellyfin2Samsung-v$env:VERSION-win-x64.msi"
 
           if (-not (Test-Path $msi)) {
@@ -122,19 +181,7 @@ jobs:
           Write-Host "SHA256: $hash"
           "sha256=$hash" >> $env:GITHUB_OUTPUT
 
-      - name: Upload MSI to release
-        env:
-          GH_TOKEN: ${{ secrets.MAIN_REPO_TOKEN }}
-          VERSION_TAG: v${{ needs.check.outputs.latest }}
-          VERSION: ${{ needs.check.outputs.latest }}
-        shell: pwsh
-        run: |
-          gh release upload "$env:VERSION_TAG" `
-            "Jellyfin2Samsung-v$env:VERSION-win-x64.msi" `
-            --repo Jellyfin2Samsung/Samsung-Jellyfin-Installer `
-            --clobber
-
-      - name: Create local WinGet manifests
+      - name: Create or update local WinGet manifests
         env:
           VERSION: ${{ needs.check.outputs.latest }}
           SHA256: ${{ steps.hash.outputs.sha256 }}
@@ -142,7 +189,6 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $identifier = "Jellyfin2Samsung.Jellyfin2Samsung"
           $manifestRoot = "manifests/j/Jellyfin2Samsung/Jellyfin2Samsung"
           $newDir = Join-Path $manifestRoot $env:VERSION
 
@@ -155,17 +201,25 @@ jobs:
             Sort-Object { [version]$_.Name } |
             Select-Object -Last 1
 
-          if (-not $oldDir) {
-            throw "No existing manifest version directory found in $manifestRoot"
+          if (-not (Test-Path $newDir)) {
+            if (-not $oldDir) {
+              throw "No existing manifest version directory found in $manifestRoot"
+            }
+
+            Write-Host "Using previous manifest directory: $($oldDir.FullName)"
+            Write-Host "Creating new manifest directory:  $newDir"
+
+            New-Item -ItemType Directory -Force -Path $newDir | Out-Null
+            Copy-Item "$($oldDir.FullName)\*.yaml" $newDir -Force
+          } else {
+            Write-Host "Manifest directory already exists, updating in place: $newDir"
           }
 
-          Write-Host "Using previous manifest directory: $($oldDir.FullName)"
-          Write-Host "Creating new manifest directory: $newDir"
-
-          New-Item -ItemType Directory -Force -Path $newDir | Out-Null
-          Copy-Item "$($oldDir.FullName)\*.yaml" $newDir -Force
-
           $files = Get-ChildItem $newDir -Filter "*.yaml"
+
+          if (-not $files) {
+            throw "No YAML manifest files found in $newDir"
+          }
 
           foreach ($file in $files) {
             Write-Host "Updating $($file.FullName)"
@@ -182,33 +236,67 @@ jobs:
               'InstallerSha256:\s*.*', `
               "InstallerSha256: $env:SHA256"
 
-            Set-Content -Path $file.FullName -Value $content -NoNewline
+            Set-Content -Path $file.FullName -Value $content
           }
 
           Write-Host "Updated manifest files:"
           Get-ChildItem $newDir -Filter "*.yaml" | ForEach-Object {
-            Write-Host $_.FullName
+            Write-Host " - $($_.FullName)"
           }
 
-      - name: Commit updated local manifests
+      - name: Validate manifests with winget
+        env:
+          VERSION: ${{ needs.check.outputs.latest }}
         shell: pwsh
         run: |
-          git config user.name "github-actions[bot]"
+          $ErrorActionPreference = "Stop"
+
+          $newDir = "manifests/j/Jellyfin2Samsung/Jellyfin2Samsung/$env:VERSION"
+
+          # winget.exe is present on windows-latest runners. If this step ever
+          # fails to find it, swap in a yq-based sanity check instead.
+          winget validate --manifest $newDir
+
+      - name: Upload MSI to release
+        if: github.event.inputs.dry_run != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION_TAG: v${{ needs.check.outputs.latest }}
+          VERSION: ${{ needs.check.outputs.latest }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          gh release upload "$env:VERSION_TAG" `
+            "Jellyfin2Samsung-v$env:VERSION-win-x64.msi" `
+            --repo Jellyfin2Samsung/Samsung-Jellyfin-Installer `
+            --clobber
+
+      - name: Commit updated local manifests
+        if: github.event.inputs.dry_run != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git status
           git add manifests/
 
           $changes = git diff --cached --name-only
 
           if (-not $changes) {
             Write-Host "No manifest changes to commit."
-          } else {
-            git commit -m "chore: add WinGet manifest for v${{ needs.check.outputs.latest }}"
-            git push
+            exit 0
           }
 
+          git commit -m "chore: add WinGet manifest for v${{ needs.check.outputs.latest }}"
+
+          git pull --rebase origin main
+          git push origin main
+
       - name: Submit to WinGet
+        if: github.event.inputs.dry_run != 'true'
         uses: vedantmgoyal9/winget-releaser@v2
         with:
           identifier: Jellyfin2Samsung.Jellyfin2Samsung
@@ -217,4 +305,18 @@ jobs:
           release-repository: Samsung-Jellyfin-Installer
           installers-regex: '\.msi$'
           fork-user: Jellyfin2Samsung
-          token: ${{ secrets.MAIN_REPO_TOKEN }}
+          token: ${{ secrets.WINGET_TOKEN }}
+
+      - name: Dry run summary
+        if: github.event.inputs.dry_run == 'true'
+        shell: pwsh
+        run: |
+          Write-Host "=============================================="
+          Write-Host " DRY RUN - no side effects were performed"
+          Write-Host "=============================================="
+          Write-Host "Version:        ${{ needs.check.outputs.latest }}"
+          Write-Host "MSI SHA256:     ${{ steps.hash.outputs.sha256 }}"
+          Write-Host "Skipped steps:"
+          Write-Host "  - Upload MSI to GitHub release"
+          Write-Host "  - Commit manifest to main"
+          Write-Host "  - Submit PR to microsoft/winget-pkgs"
