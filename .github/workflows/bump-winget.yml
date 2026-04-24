@@ -278,7 +278,9 @@ jobs:
       - name: Upload MSI to release
         if: github.event.inputs.dry_run != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Cross-repo write: GITHUB_TOKEN is scoped to this repo only,
+          # so uploading an asset to Samsung-Jellyfin-Installer needs the PAT.
+          GH_TOKEN: ${{ secrets.MAIN_REPO_TOKEN }}
           VERSION_TAG: v${{ needs.check.outputs.latest }}
           VERSION: ${{ needs.check.outputs.latest }}
         shell: pwsh
