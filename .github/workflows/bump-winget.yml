@@ -259,9 +259,19 @@ jobs:
 
           $newDir = "manifests/j/Jellyfin2Samsung/Jellyfin2Samsung/$env:VERSION"
 
-          # winget.exe is present on windows-latest runners. If this step ever
-          # fails to find it, swap in a yq-based sanity check instead.
-          winget validate --manifest $newDir
+          # winget validate exits 1 on any warning (even when the manifest
+          # itself is valid). Microsoft's own winget-pkgs CI treats
+          # "succeeded with warnings" as success, so we do the same.
+          $output = & winget validate --manifest $newDir 2>&1 | Out-String
+          Write-Host $output
+
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Manifest validation passed."
+          } elseif ($output -match 'Manifest validation succeeded') {
+            Write-Warning "Manifest validation passed with warnings (treated as success)."
+          } else {
+            throw "Manifest validation failed (exit $LASTEXITCODE)."
+          }
 
       - name: Upload MSI to release
         if: github.event.inputs.dry_run != 'true'
