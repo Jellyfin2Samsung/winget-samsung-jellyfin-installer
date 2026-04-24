@@ -102,11 +102,23 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      - name: Verify MAIN_REPO_TOKEN is available
+        env:
+          MAIN_REPO_TOKEN: ${{ secrets.MAIN_REPO_TOKEN }}
+        shell: bash
+        run: |
+          if [ -z "$MAIN_REPO_TOKEN" ]; then
+            echo "::error::MAIN_REPO_TOKEN is not set for this workflow."
+            echo "Check repo Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          echo "MAIN_REPO_TOKEN is set."
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # WINGET_TOKEN is persisted here so the later `git push` to main uses it.
-          token: ${{ secrets.WINGET_TOKEN }}
+          # Default GITHUB_TOKEN is fine for read + pull.
+          # The later push uses MAIN_REPO_TOKEN explicitly via URL.
           ref: main
           fetch-depth: 0
 
@@ -274,6 +286,8 @@ jobs:
 
       - name: Commit updated local manifests
         if: github.event.inputs.dry_run != 'true'
+        env:
+          MAIN_REPO_TOKEN: ${{ secrets.MAIN_REPO_TOKEN }}
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -292,8 +306,12 @@ jobs:
 
           git commit -m "chore: add WinGet manifest for v${{ needs.check.outputs.latest }}"
 
+          # Pull with the already-persisted GITHUB_TOKEN (fine for read).
           git pull --rebase origin main
-          git push origin main
+
+          # Push with MAIN_REPO_TOKEN explicitly, without touching git config.
+          $pushUrl = "https://x-access-token:$env:MAIN_REPO_TOKEN@github.com/${{ github.repository }}.git"
+          git push $pushUrl HEAD:main
 
       - name: Submit to WinGet
         if: github.event.inputs.dry_run != 'true'
@@ -305,7 +323,7 @@ jobs:
           release-repository: Samsung-Jellyfin-Installer
           installers-regex: '\.msi$'
           fork-user: Jellyfin2Samsung
-          token: ${{ secrets.WINGET_TOKEN }}
+          token: ${{ secrets.MAIN_REPO_TOKEN }}
 
       - name: Dry run summary
         if: github.event.inputs.dry_run == 'true'
