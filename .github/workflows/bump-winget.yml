@@ -5,27 +5,49 @@ on:
     - cron: '0 9 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   check:
     runs-on: ubuntu-latest
+
     outputs:
       latest: ${{ steps.versions.outputs.latest }}
       current: ${{ steps.versions.outputs.current }}
       has_update: ${{ steps.versions.outputs.has_update }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Check versions
         id: versions
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
-          latest=$(gh release view --repo Jellyfin2Samsung/Samsung-Jellyfin-Installer --json tagName -q ".tagName" | sed 's/^v//')
+          set -euo pipefail
 
-          manifest="manifests/j/Jellyfin2Samsung/Jellyfin2Samsung/installer.yaml"
-          if [ -f "$manifest" ]; then
-            current=$(grep 'PackageVersion:' "$manifest" | head -1 | sed 's/PackageVersion:\s*//' | xargs)
+          latest="$(
+            gh release view \
+              --repo Jellyfin2Samsung/Samsung-Jellyfin-Installer \
+              --json tagName \
+              -q ".tagName" |
+            sed 's/^v//'
+          )"
+
+          manifest_root="manifests/j/Jellyfin2Samsung/Jellyfin2Samsung"
+
+          if [ -d "$manifest_root" ]; then
+            current="$(
+              find "$manifest_root" \
+                -name "Jellyfin2Samsung.Jellyfin2Samsung.installer.yaml" \
+                -exec grep -H "PackageVersion:" {} \; |
+              sed 's/.*PackageVersion:[[:space:]]*//' |
+              sort -V |
+              tail -1
+            )"
           else
             current=""
           fi
@@ -33,22 +55,25 @@ jobs:
           echo "Latest: $latest"
           echo "Current: $current"
 
-          echo "latest=$latest" >> $GITHUB_OUTPUT
-          echo "current=$current" >> $GITHUB_OUTPUT
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "current=$current" >> "$GITHUB_OUTPUT"
 
           if [ "$latest" != "$current" ]; then
-            echo "has_update=true" >> $GITHUB_OUTPUT
+            echo "has_update=true" >> "$GITHUB_OUTPUT"
           else
-            echo "has_update=false" >> $GITHUB_OUTPUT
+            echo "has_update=false" >> "$GITHUB_OUTPUT"
           fi
 
-  build-and-submit:
+  build-update-and-submit:
     runs-on: windows-latest
     needs: check
     if: needs.check.outputs.has_update == 'true'
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.MAIN_REPO_TOKEN }}
 
       - name: Download Windows zip from release
         env:
@@ -61,9 +86,10 @@ jobs:
             --pattern "*-win-x64.zip" `
             --output win.zip
 
-          Expand-Archive win.zip -DestinationPath publish
+          Expand-Archive win.zip -DestinationPath publish -Force
 
       - name: Install WiX
+        shell: pwsh
         run: |
           dotnet tool install --global wix
           wix eula accept wix7
@@ -73,7 +99,28 @@ jobs:
         env:
           VERSION: ${{ needs.check.outputs.latest }}
         shell: pwsh
-        run: wix build installer/Product.wxs -arch x64 -ext WixToolset.Util.wixext -o "Jellyfin2Samsung-v$env:VERSION-win-x64.msi"
+        run: |
+          wix build installer/Product.wxs `
+            -arch x64 `
+            -ext WixToolset.Util.wixext `
+            -o "Jellyfin2Samsung-v$env:VERSION-win-x64.msi"
+
+      - name: Compute MSI SHA256
+        id: hash
+        env:
+          VERSION: ${{ needs.check.outputs.latest }}
+        shell: pwsh
+        run: |
+          $msi = "Jellyfin2Samsung-v$env:VERSION-win-x64.msi"
+
+          if (-not (Test-Path $msi)) {
+            throw "MSI not found: $msi"
+          }
+
+          $hash = (Get-FileHash $msi -Algorithm SHA256).Hash.ToUpperInvariant()
+
+          Write-Host "SHA256: $hash"
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
 
       - name: Upload MSI to release
         env:
@@ -86,6 +133,80 @@ jobs:
             "Jellyfin2Samsung-v$env:VERSION-win-x64.msi" `
             --repo Jellyfin2Samsung/Samsung-Jellyfin-Installer `
             --clobber
+
+      - name: Create local WinGet manifests
+        env:
+          VERSION: ${{ needs.check.outputs.latest }}
+          SHA256: ${{ steps.hash.outputs.sha256 }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $identifier = "Jellyfin2Samsung.Jellyfin2Samsung"
+          $manifestRoot = "manifests/j/Jellyfin2Samsung/Jellyfin2Samsung"
+          $newDir = Join-Path $manifestRoot $env:VERSION
+
+          if (-not (Test-Path $manifestRoot)) {
+            throw "Manifest root not found: $manifestRoot"
+          }
+
+          $oldDir = Get-ChildItem $manifestRoot -Directory |
+            Where-Object { $_.Name -ne $env:VERSION } |
+            Sort-Object { [version]$_.Name } |
+            Select-Object -Last 1
+
+          if (-not $oldDir) {
+            throw "No existing manifest version directory found in $manifestRoot"
+          }
+
+          Write-Host "Using previous manifest directory: $($oldDir.FullName)"
+          Write-Host "Creating new manifest directory: $newDir"
+
+          New-Item -ItemType Directory -Force -Path $newDir | Out-Null
+          Copy-Item "$($oldDir.FullName)\*.yaml" $newDir -Force
+
+          $files = Get-ChildItem $newDir -Filter "*.yaml"
+
+          foreach ($file in $files) {
+            Write-Host "Updating $($file.FullName)"
+
+            $content = Get-Content $file.FullName -Raw
+
+            $content = $content -replace 'PackageVersion:\s*.*', "PackageVersion: $env:VERSION"
+
+            $content = $content -replace `
+              'https://github\.com/Jellyfin2Samsung/Samsung-Jellyfin-Installer/releases/download/v[^/]+/Jellyfin2Samsung-v[^/]+-win-x64\.msi', `
+              "https://github.com/Jellyfin2Samsung/Samsung-Jellyfin-Installer/releases/download/v$env:VERSION/Jellyfin2Samsung-v$env:VERSION-win-x64.msi"
+
+            $content = $content -replace `
+              'InstallerSha256:\s*.*', `
+              "InstallerSha256: $env:SHA256"
+
+            Set-Content -Path $file.FullName -Value $content -NoNewline
+          }
+
+          Write-Host "Updated manifest files:"
+          Get-ChildItem $newDir -Filter "*.yaml" | ForEach-Object {
+            Write-Host $_.FullName
+          }
+
+      - name: Commit updated local manifests
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git status
+          git add manifests/
+
+          $changes = git diff --cached --name-only
+
+          if (-not $changes) {
+            Write-Host "No manifest changes to commit."
+          } else {
+            git commit -m "chore: add WinGet manifest for v${{ needs.check.outputs.latest }}"
+            git push
+          }
 
       - name: Submit to WinGet
         uses: vedantmgoyal9/winget-releaser@v2
