@@ -24,10 +24,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Pin WiX so a scheduled run never breaks on a new major.
-  # Bump intentionally when you want newer WiX features / fixes.
-  WIX_VERSION: '5.0.2'
-  WIX_UTIL_EXT_VERSION: '5.0.2'
+  # Must match the committed extension at .wix/extensions/WixToolset.Util.wixext/<X>/wixext<N>/
+  # (wixext6 -> WiX 6.x CLI). Bump intentionally when the committed extension is updated.
+  WIX_VERSION: '6.0.2'
 
 jobs:
   check:
@@ -142,25 +141,20 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.dotnet/tools
-          key: wix-${{ env.WIX_VERSION }}-${{ env.WIX_UTIL_EXT_VERSION }}
+          key: wix-${{ env.WIX_VERSION }}
 
       - name: Install WiX
         if: steps.wix-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-
           dotnet tool install --global wix --version $env:WIX_VERSION
-          wix eula accept wix7
-          wix extension add "WixToolset.Util.wixext/$env:WIX_UTIL_EXT_VERSION"
 
       - name: Ensure WiX on PATH (cache hit)
         if: steps.wix-cache.outputs.cache-hit == 'true'
         shell: pwsh
         run: |
-          # Cached tools still need PATH set and EULA accepted per-runner.
           Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.dotnet\tools"
-          wix eula accept wix7
 
       - name: Build MSI
         env:
