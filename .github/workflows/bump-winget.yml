@@ -267,8 +267,10 @@ jobs:
 
           if ($LASTEXITCODE -eq 0) {
             Write-Host "Manifest validation passed."
+            exit 0
           } elseif ($output -match 'Manifest validation succeeded') {
             Write-Warning "Manifest validation passed with warnings (treated as success)."
+            exit 0
           } else {
             throw "Manifest validation failed (exit $LASTEXITCODE)."
           }
